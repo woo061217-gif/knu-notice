@@ -1170,109 +1170,132 @@ def extract_views(row):
   return 0
 
 
-# 🚀 강원대 포털 통합 공지사항 수집 (중복 완벽 방지 & 조회수 추출)
-@st.cache_data(ttl=600)
-def fetch_knu_integrated_notices():
-  headers = {
-      "User-Agent": (
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,"
-          " like Gecko) Chrome/120.0.0.0 Safari/537.36"
-      )
-  }
-  all_notices = []
-  seen_canonical_urls = set()
-  seen_norm_titles = set()
-  today = datetime.now().date()
-  four_years_ago = today - timedelta(days=365 * 4)
-
-  for board in KNU_INTEGRATED_BOARDS:
-    board_name = board["name"]
-    base_url = board["url"]
-
-    for page in range(1, 8):
-      page_url = (
-          f"{base_url}&pageIndex={page}"
-          if "?" in base_url
-          else f"{base_url}?pageIndex={page}"
-      )
-      try:
+# 🚀 강원대 포털 통합 공지 단일 페이지 수집 헬퍼 함수
+def fetch_knu_single_page(board_name, base_url, page, four_years_ago, today):
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,"
+            " like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        )
+    }
+    page_url = (
+        f"{base_url}&pageIndex={page}"
+        if "?" in base_url
+        else f"{base_url}?pageIndex={page}"
+    )
+    items = []
+    try:
         res = requests.get(page_url, headers=headers, timeout=6)
         if res.status_code != 200:
-          break
+            return items
         soup = BeautifulSoup(res.text, "html.parser")
         rows = soup.select("div.table-inner table tbody tr, table tbody tr")
         if not rows:
-          break
+            return items
 
-        has_older_than_4y = False
         for row in rows:
-          title_tag = row.select_one(
-              "td.title a, td.link-ellipsis a, a.detail-button, td.subject a"
-          )
-          if not title_tag:
-            continue
-          title = title_tag.get_text(strip=True)
-          if not title or len(title) < 2 or title.isdigit():
-            continue
-          href = title_tag.get("href", "")
-          if not href or href == "#" or "javascript" in href:
-            continue
-
-          full_link = urljoin(page_url, href)
-          canon_link = canonicalize_url(full_link)
-          norm_title = normalize_title(title)
-
-          # URL 및 제목 기준 중복 차단
-          if (
-              canon_link in seen_canonical_urls
-              or norm_title in seen_norm_titles
-          ):
-            continue
-
-          date_tag = row.select_one(
-              "td:nth-child(4), td.date, td:nth-child(5), td:nth-child(3)"
-          )
-          date_str = date_tag.get_text(strip=True) if date_tag else ""
-          match = re.search(r"(\d{4})[.-](\d{1,2})[.-](\d{1,2})", date_str)
-          if not match:
-            match = re.search(
-                r"(\d{4})[.-](\d{1,2})[.-](\d{1,2})", row.get_text()
+            title_tag = row.select_one(
+                "td.title a, td.link-ellipsis a, a.detail-button, td.subject a"
             )
+            if not title_tag:
+                continue
+            title = title_tag.get_text(strip=True)
+            if not title or len(title) < 2 or title.isdigit():
+                continue
+            href = title_tag.get("href", "")
+            if not href or href == "#" or "javascript" in href:
+                continue
 
-          notice_date = today
-          clean_date = str(today)
-          if match:
-            y, m, d = match.groups()
-            clean_date = f"{y}-{int(m):02d}-{int(d):02d}"
-            try:
-              notice_date = datetime.strptime(clean_date, "%Y-%m-%d").date()
-            except:
-              pass
+            full_link = urljoin(page_url, href)
+            canon_link = canonicalize_url(full_link)
+            norm_title = normalize_title(title)
 
-          if notice_date < four_years_ago:
-            has_older_than_4y = True
-            continue
+            date_tag = row.select_one(
+                "td:nth-child(4), td.date, td:nth-child(5), td:nth-child(3)"
+            )
+            date_str = date_tag.get_text(strip=True) if date_tag else ""
+            match = re.search(r"(\d{4})[.-](\d{1,2})[.-](\d{1,2})", date_str)
+            if not match:
+                match = re.search(
+                    r"(\d{4})[.-](\d{1,2})[.-](\d{1,2})", row.get_text()
+                )
 
-          views = extract_views(row)
+            notice_date = today
+            clean_date = str(today)
+            if match:
+                y, m, d = match.groups()
+                clean_date = f"{y}-{int(m):02d}-{int(d):02d}"
+                try:
+                    notice_date = datetime.strptime(clean_date, "%Y-%m-%d").date()
+                except Exception:
+                    pass
 
-          seen_canonical_urls.add(canon_link)
-          seen_norm_titles.add(norm_title)
+            if notice_date < four_years_ago:
+                continue
 
-          all_notices.append({
-              "board": board_name,
-              "is_dept": False,
-              "title": title,
-              "link": canon_link,
-              "date": clean_date,
-              "datetime": notice_date,
-              "views": views,
-          })
+            views = extract_views(row)
 
-        if has_older_than_4y:
-          break
-      except Exception:
-        continue
-  return all_notices
+            items.append({
+                "board": board_name,
+                "is_dept": False,
+                "title": title,
+                "link": canon_link,
+                "date": clean_date,
+                "datetime": notice_date,
+                "views": views,
+                "canon_link": canon_link,
+                "norm_title": norm_title,
+            })
+    except Exception:
+        pass
+    return items
+
+
+# 🚀 강원대 포털 통합 공지사항 수집 (중복 완벽 방지 & 멀티스레드 병렬 초고속 수집)
+@st.cache_data(ttl=600)
+def fetch_knu_integrated_notices():
+    today = datetime.now().date()
+    four_years_ago = today - timedelta(days=365 * 4)
+    tasks = []
+    with ThreadPoolExecutor(max_workers=15) as executor:
+        for board in KNU_INTEGRATED_BOARDS:
+            for page in range(1, 6):
+                tasks.append(
+                    executor.submit(
+                        fetch_knu_single_page,
+                        board["name"],
+                        board["url"],
+                        page,
+                        four_years_ago,
+                        today,
+                    )
+                )
+
+    all_notices = []
+    seen_canonical_urls = set()
+    seen_norm_titles = set()
+    for t in tasks:
+        try:
+            page_items = t.result()
+            for it in page_items:
+                if (
+                    it["canon_link"] not in seen_canonical_urls
+                    and it["norm_title"] not in seen_norm_titles
+                ):
+                    seen_canonical_urls.add(it["canon_link"])
+                    seen_norm_titles.add(it["norm_title"])
+                    all_notices.append({
+                        "board": it["board"],
+                        "is_dept": False,
+                        "title": it["title"],
+                        "link": it["link"],
+                        "date": it["date"],
+                        "datetime": it["datetime"],
+                        "views": it["views"],
+                    })
+        except Exception:
+            pass
+    return all_notices
 
 
 # 📖 선택된 학과 공지사항 수집 (중복 완벽 방지 & 조회수 추출, 최대 4년 전까지)
@@ -1608,22 +1631,57 @@ if not st.session_state.onboarded:
         unsafe_allow_html=True,
     )
 
+    role_options = [
+        "대학 본부 통합 공지 + 학과 공지 (추천)",
+        "대학 본부 통합 공지만 보기 (일반/학사/장학/채용/행사)",
+        "교수용 (복수 학과 모니터링 + 통합 공지)",
+    ]
+    cur_idx = 0
+    if st.session_state.user_role == "integrated_only":
+      cur_idx = 1
+    elif st.session_state.user_role == "professor":
+      cur_idx = 2
+
     role_choice = st.radio(
-        "사용자 구분을 선택하세요",
-        [
-            "학생용 (소속 학과 1개 선택)",
-            "교수용 (캠퍼스 무관 여러 학과 복수 선택 및 동시 조회)",
-        ],
-        index=0 if st.session_state.user_role == "student" else 1,
+        "조회 모드를 선택하세요",
+        role_options,
+        index=cur_idx,
         horizontal=True,
     )
-    is_professor = "교수용" in role_choice
 
     st.markdown("<hr style='margin: 15px 0; border: none; border-top: 1px solid #f1f5f9;'>", unsafe_allow_html=True)
 
-    if not is_professor:
+    if role_choice == "대학 본부 통합 공지만 보기 (일반/학사/장학/채용/행사)":
+      st.markdown(
+          """<div style="background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 10px; padding: 18px 20px; margin-top: 6px; margin-bottom: 16px;">
+              <div style="font-weight: 700; color: #1e40af; font-size: 0.96rem; margin-bottom: 6px;">강원대학교 포털 5대 통합 공지사항 전용 모드</div>
+              <div style="color: #475569; font-size: 0.88rem; line-height: 1.6;">
+                  특정 학과를 지정하지 않고, 강원대학교 공식 포털의 <strong>일반공지, 학사공지, 장학공지, 채용안내, 행사안내</strong> 전체를 실시간으로 탐색하고 의미 기반으로 검색합니다.
+              </div>
+          </div>""",
+          unsafe_allow_html=True,
+      )
+      st.markdown("</div>", unsafe_allow_html=True)
+
+      col_btn_l, col_btn_r = st.columns([0.3, 0.7])
+      with col_btn_r:
+        if st.button(
+            "대학 본부 통합 공지 조회 시작하기",
+            type="primary",
+            use_container_width=True,
+        ):
+          st.session_state.user_role = "integrated_only"
+          st.session_state.selected_dept = "강원대 통합공지"
+          st.session_state.selected_dept_url = ""
+          st.session_state.selected_depts = []
+          st.session_state.selected_dept_urls = {}
+          st.session_state.selected_dept_labels = {}
+          st.session_state.onboarded = True
+          st.rerun()
+
+    elif role_choice == "대학 본부 통합 공지 + 학과 공지 (추천)":
       # =======================================================================
-      # [학생용] 단일 학과 선택 모드
+      # [학생/일반용] 단일 학과 + 통합 공지 선택 모드
       # =======================================================================
       campus_list = list(CAMPUS_DATA.keys())
       campus_idx = (
@@ -1678,7 +1736,7 @@ if not st.session_state.onboarded:
       col_btn_l, col_btn_r = st.columns([0.3, 0.7])
       with col_btn_r:
         if st.button(
-            "공지사항 조회 시작하기",
+            "통합 공지 및 학과 공지 조회 시작하기",
             type="primary",
             use_container_width=True,
         ):
@@ -1818,7 +1876,13 @@ if not st.session_state.onboarded:
 # =============================================================================
 
 # 1. 상단 고정 Glassmorphism 네비게이션 바
-curr_role_text = "교수 모드 (복수 모니터링)" if st.session_state.user_role == "professor" else "학생 모드 (소속 학과 맞춤)"
+if st.session_state.user_role == "integrated_only":
+  curr_role_text = "대학 본부 통합 공지 모드"
+elif st.session_state.user_role == "professor":
+  curr_role_text = "교수 모드 (복수 모니터링)"
+else:
+  curr_role_text = "학생 모드 (소속 학과 + 통합 공지)"
+
 st.markdown(
     f"""<div class="knu-navbar">
         <div class="navbar-brand">
@@ -1853,9 +1917,32 @@ with col_title:
             <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 8px;">
                 <span style="background-color: #f1f5f9; color: #334155; padding: 3px 9px; border-radius: 6px; font-weight: 700; font-size: 0.8rem; border: 1px solid #e2e8f0;">선택 {len(st.session_state.selected_depts)}개 학과</span>
                 {dept_badges}
+                <span class="badge badge-scholar" style="font-size: 0.84rem;">대학 포털 5대 통합 공지 포함</span>
             </div>
             <div style="color: #64748b; font-size: 0.86rem; margin-top: 8px;">
-                선택하신 학과 홈페이지 공지사항과 강원대학교 포털 통합 공지를 실시간으로 분석합니다.
+                선택하신 학과 홈페이지 공지사항과 강원대학교 포털 5대 통합 공지를 실시간으로 결합하여 모니터링합니다.
+            </div>
+        </div>""",
+        unsafe_allow_html=True,
+    )
+  elif st.session_state.user_role == "integrated_only":
+    st.markdown(
+        """<div class="app-header-box">
+            <div style="font-size: 0.84rem; font-weight: 700; color: #1e40af; letter-spacing: 0.05em; text-transform: uppercase; margin-bottom: 4px;">
+                KNU Central Portal Notice Feed
+            </div>
+            <h2 style="margin: 0 0 10px 0; color: #0f172a; font-weight: 800; font-size: 1.45rem;">
+                강원대학교 대표 포털 5대 통합 공지사항
+            </h2>
+            <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 8px;">
+                <span class="badge badge-general">일반공지</span>
+                <span class="badge badge-academic">학사공지</span>
+                <span class="badge badge-scholar">장학공지</span>
+                <span class="badge badge-recruit">채용안내</span>
+                <span class="badge badge-event">행사안내</span>
+            </div>
+            <div style="color: #64748b; font-size: 0.86rem; margin-top: 8px;">
+                강원대학교 대표 홈페이지의 공식 5대 공지사항을 실시간으로 수집하여 의미 기반 검색 및 최신순 조회를 제공합니다.
             </div>
         </div>""",
         unsafe_allow_html=True,
@@ -1864,18 +1951,19 @@ with col_title:
     st.markdown(
         f"""<div class="app-header-box">
             <div style="font-size: 0.84rem; font-weight: 700; color: #1e40af; letter-spacing: 0.05em; text-transform: uppercase; margin-bottom: 4px;">
-                Student Academic Notice Feed
+                Campus & Department Smart Notice Feed
             </div>
             <h2 style="margin: 0 0 10px 0; color: #0f172a; font-weight: 800; font-size: 1.45rem;">
-                {st.session_state.selected_dept} 맞춤형 공지 검색
+                대학 본부 통합 공지 & {st.session_state.selected_dept} 맞춤형 검색
             </h2>
             <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 8px;">
                 <span class="badge badge-dept">{st.session_state.selected_campus}</span>
                 <span class="badge badge-general">{st.session_state.selected_college}</span>
                 <span class="badge badge-academic" style="font-size: 0.84rem;">{st.session_state.selected_dept}</span>
+                <span class="badge badge-scholar" style="font-size: 0.84rem;">대학 본부 5대 통합 공지 포함</span>
             </div>
             <div style="color: #64748b; font-size: 0.86rem; margin-top: 8px;">
-                선택하신 학과 공지와 강원대학교 포털 통합 공지를 결합하여 최적의 학사 정보를 제공합니다.
+                강원대학교 포털 5대 통합 공지(일반/학사/장학/채용/행사)와 소속 학과 공지를 결합하여 최적의 학사 정보를 제공합니다.
             </div>
         </div>""",
         unsafe_allow_html=True,
@@ -1883,7 +1971,7 @@ with col_title:
 
 with col_change_dept:
   st.write("")
-  if st.button("학과/모드 재설정", use_container_width=True, type="secondary"):
+  if st.button("모드/학과 재설정", use_container_width=True, type="secondary"):
     st.session_state.onboarded = False
     st.rerun()
 
@@ -1927,6 +2015,12 @@ if st.session_state.user_role == "professor":
       )
     else:
       st.sidebar.markdown(f"• **{d_label}**")
+elif st.session_state.user_role == "integrated_only":
+  st.sidebar.markdown(
+      "**현재 모드:**<br><span style='color:#1e40af;"
+      " font-weight:700;'>강원대학교 포털 5대 통합 공지 전용</span>",
+      unsafe_allow_html=True,
+  )
 else:
   st.sidebar.markdown(
       f"""**현재 선택 학과:**<br>
@@ -1935,6 +2029,23 @@ else:
 """,
       unsafe_allow_html=True,
   )
+
+st.sidebar.markdown(
+    "<hr style='margin: 12px 0; border: none; border-top: 1px solid"
+    " #e2e8f0;'>",
+    unsafe_allow_html=True,
+)
+st.sidebar.markdown(
+    """**🏛️ 강원대 공식 5대 통합 공지 바로가기:**<br>
+<small>
+• <a href="https://www.kangwon.ac.kr/ko/bbs/504/list.do" target="_blank" style="color:#475569; text-decoration:none;">일반공지 바로가기</a><br>
+• <a href="https://www.kangwon.ac.kr/ko/bbs/720/list.do" target="_blank" style="color:#475569; text-decoration:none;">학사공지 바로가기</a><br>
+• <a href="https://www.kangwon.ac.kr/ko/bbs/721/list.do" target="_blank" style="color:#475569; text-decoration:none;">장학공지 바로가기</a><br>
+• <a href="https://www.kangwon.ac.kr/ko/bbs/716/list.do" target="_blank" style="color:#475569; text-decoration:none;">채용안내 바로가기</a><br>
+• <a href="https://www.kangwon.ac.kr/ko/bbs/715/list.do" target="_blank" style="color:#475569; text-decoration:none;">행사안내 바로가기</a>
+</small>""",
+    unsafe_allow_html=True,
+)
 
 
 def reset_all():
@@ -1961,14 +2072,16 @@ with col_btn:
     st.rerun()
 
 # 통합 공지 및 학과 공지 로딩
-loading_target = (
-    f"{len(st.session_state.selected_depts)}개 학과"
-    if st.session_state.user_role == "professor"
-    else st.session_state.selected_dept
-)
-with st.spinner(
-    f"통합 공지 및 {loading_target} 공지사항을 수집 중입니다..."
-):
+if st.session_state.user_role == "integrated_only":
+  loading_target = "대학 본부 5대 통합"
+elif st.session_state.user_role == "professor":
+  loading_target = (
+      f"대학 본부 통합 공지 및 {len(st.session_state.selected_depts)}개 학과"
+  )
+else:
+  loading_target = f"대학 본부 통합 공지 및 {st.session_state.selected_dept}"
+
+with st.spinner(f"{loading_target} 공지사항을 수집 중입니다..."):
   knu_notices = fetch_knu_integrated_notices()
 
   # 학과 공지사항 수집 (복수 학과일 경우 ThreadPoolExecutor로 병렬 수집)
@@ -1985,7 +2098,7 @@ with st.spinner(
           dept_notices.extend(f.result())
         except Exception:
           pass
-  else:
+  elif st.session_state.user_role == "student":
     dept_notices = fetch_department_notices(
         st.session_state.selected_dept, st.session_state.selected_dept_url
     )
@@ -2271,42 +2384,100 @@ if all_combined_notices:
 
   st.divider()
 
-  # 모던 카드형 공지사항 결과 리스트 렌더링 (공지 유형별 파스텔 뱃지 & 입체감 적용)
-  for idx, item in enumerate(filtered_notices, 1):
-    is_dept = item.get("is_dept", False)
-    board_chip_html = get_board_badge_html(item["board"], is_dept=is_dept)
-    views_val = item.get("views", 0)
-    views_chip_html = f'<span class="views-chip">조회 {views_val:,}회</span>'
-    date_chip_html = f'<span class="date-chip">{item["date"]}</span>'
+  # 모던 카드형 공지사항 리스트 렌더링 헬퍼 함수
+  def render_notice_list(notices, query_str=""):
+    if not notices:
+      st.info("해당 분류 조건에 맞는 공지사항이 없습니다.")
+      return
+    for idx, item in enumerate(notices, 1):
+      is_dept = item.get("is_dept", False)
+      board_chip_html = get_board_badge_html(item["board"], is_dept=is_dept)
+      views_val = item.get("views", 0)
+      views_chip_html = f'<span class="views-chip">조회 {views_val:,}회</span>'
+      date_chip_html = f'<span class="date-chip">{item["date"]}</span>'
 
-    summary_html = ""
-    if user_query.strip() and item.get("summary"):
-      summary_html = f"""
-      <div class="clean-summary-box">
-          <div class="clean-summary-header">본문 요약</div>
-          <div>{item['summary']}</div>
+      summary_html = ""
+      if query_str.strip() and item.get("summary"):
+        summary_html = f"""
+        <div class="clean-summary-box">
+            <div class="clean-summary-header">본문 요약</div>
+            <div>{item['summary']}</div>
+        </div>
+        """
+
+      card_html = f"""
+      <div class="modern-notice-card">
+          <div class="card-meta-bar">
+              <div class="card-meta-left">
+                  {board_chip_html}
+                  {date_chip_html}
+                  {views_chip_html}
+              </div>
+              <div>
+                  <a href="{item['link']}" target="_blank" class="origin-btn">원문 바로가기</a>
+              </div>
+          </div>
+          <div class="notice-card-title">
+              <a href="{item['link']}" target="_blank">{idx}. {item['title']}</a>
+          </div>
+          {summary_html}
       </div>
       """
+      st.markdown(card_html, unsafe_allow_html=True)
 
-    card_html = f"""
-    <div class="modern-notice-card">
-        <div class="card-meta-bar">
-            <div class="card-meta-left">
-                {board_chip_html}
-                {date_chip_html}
-                {views_chip_html}
-            </div>
-            <div>
-                <a href="{item['link']}" target="_blank" class="origin-btn">원문 바로가기</a>
-            </div>
-        </div>
-        <div class="notice-card-title">
-            <a href="{item['link']}" target="_blank">{idx}. {item['title']}</a>
-        </div>
-        {summary_html}
-    </div>
-    """
-    st.markdown(card_html, unsafe_allow_html=True)
+  # ⭐️ [핵심] 공지 분류별 탭(Tabs) 및 필터 시스템
+  if st.session_state.user_role == "integrated_only":
+    tab_all, tab_cat = st.tabs([
+        f"전체 통합 공지 ({len(filtered_notices)}건)",
+        "게시판별 모아보기 (일반 · 학사 · 장학 · 채용 · 행사)",
+    ])
+    with tab_all:
+      render_notice_list(filtered_notices, user_query)
+    with tab_cat:
+      selected_sub_board = st.radio(
+          "확인할 공지 게시판을 선택하세요",
+          ["일반공지", "학사공지", "장학공지", "채용안내", "행사안내"],
+          horizontal=True,
+          key="knu_sub_board_alone",
+      )
+      sub_filtered = [
+          it for it in filtered_notices if it.get("board") == selected_sub_board
+      ]
+      st.caption(
+          f"**{selected_sub_board}** 공지사항: 총 {len(sub_filtered)}건"
+      )
+      render_notice_list(sub_filtered, user_query)
+  else:
+    tab_all, tab_integrated, tab_dept = st.tabs([
+        f"전체 공지 ({len(filtered_notices)}건)",
+        f"대학 본부 통합 공지 ({knu_notice_count}건)",
+        f"학과 공지 ({dept_notice_count}건)",
+    ])
+    with tab_all:
+      render_notice_list(filtered_notices, user_query)
+
+    with tab_integrated:
+      knu_sub_list = [it for it in filtered_notices if not it.get("is_dept")]
+      selected_sub_board = st.radio(
+          "통합 공지 세부 분류 필터",
+          ["전체", "일반공지", "학사공지", "장학공지", "채용안내", "행사안내"],
+          horizontal=True,
+          key="knu_sub_board_student",
+      )
+      if selected_sub_board != "전체":
+        knu_sub_list = [
+            it for it in knu_sub_list if it.get("board") == selected_sub_board
+        ]
+      st.caption(
+          f"**대학 본부 통합 공지 ({selected_sub_board})**: 총"
+          f" {len(knu_sub_list)}건"
+      )
+      render_notice_list(knu_sub_list, user_query)
+
+    with tab_dept:
+      dept_sub_list = [it for it in filtered_notices if it.get("is_dept")]
+      st.caption(f"**학과 공지사항**: 총 {len(dept_sub_list)}건")
+      render_notice_list(dept_sub_list, user_query)
 else:
   st.error(
       "공지사항을 가져오지 못했습니다. 네트워크 연결 상태를 확인해 주세요."
